@@ -8,6 +8,7 @@ import { settingsLoadError, settingsReady } from '../stores/settings'
 import { compressImage } from '../utils/image'
 import { imageDisplayUrl, uploadImage } from '../services/images'
 import CheckinCelebration from './CheckinCelebration.vue'
+import TodayWeather from './TodayWeather.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -437,6 +438,7 @@ watch(() => authUser.value?.id, () => {
         <span class="greet" id="greeting">{{ greetingByHour() }}</span>
       </div>
     </div>
+    <TodayWeather :date="todayDate" />
     <h1 class="headline my-[10px] text-[length:var(--font-title)] font-bold tracking-[-.04em]">
       把日子过成<span>喜欢的样子</span>
     </h1>

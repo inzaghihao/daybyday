@@ -1,26 +1,18 @@
-const ACCESS_TOKEN_KEY = '100day.access-token'
-const REFRESH_TOKEN_KEY = '100day.refresh-token'
-
-function getStorage(): Storage | null {
-  return typeof window === 'undefined' ? null : window.sessionStorage
-}
+let accessToken = ''
 
 export function getAccessToken(): string {
-  return getStorage()?.getItem(ACCESS_TOKEN_KEY) ?? ''
+  return accessToken
 }
 
-export function getRefreshToken(): string {
-  return getStorage()?.getItem(REFRESH_TOKEN_KEY) ?? ''
+export function setAccessToken(token: string): void {
+  accessToken = token
 }
 
-export function saveTokens(accessToken: string, refreshToken: string): void {
-  const storage = getStorage()
-  storage?.setItem(ACCESS_TOKEN_KEY, accessToken)
-  storage?.setItem(REFRESH_TOKEN_KEY, refreshToken)
-}
-
-export function clearTokens(): void {
-  const storage = getStorage()
-  storage?.removeItem(ACCESS_TOKEN_KEY)
-  storage?.removeItem(REFRESH_TOKEN_KEY)
+export function clearLegacyTokens(): void {
+  try {
+    window.sessionStorage.removeItem('100day.access-token')
+    window.sessionStorage.removeItem('100day.refresh-token')
+  } catch {
+    // Browser storage may be disabled.
+  }
 }

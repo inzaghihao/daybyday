@@ -1,43 +1,83 @@
 import axios, { type AxiosRequestConfig, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
-import { clearTokens, getAccessToken, getRefreshToken, saveTokens } from './authToken'
+import { getAccessToken, setAccessToken } from './authToken'
 import type { AuthTokens } from './auth'
 
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 10_000,
+  withCredentials: true,
   headers: {
     Accept: 'application/json',
   },
 })
 
 let refreshRequest: Promise<string> | null = null
+let sessionQueue: Promise<unknown> = Promise.resolve()
 
-client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+const sessionRequestConfig = { headers: { 'X-Auth-Session': '1' } }
+type AuthRequestConfig = InternalAxiosRequestConfig & { authRetry?: boolean }
+
+export function withSessionLock<T>(action: () => Promise<T>): Promise<T> {
+  // The cookie is shared across tabs, and each refresh token can only be used once.
+  const result = sessionQueue.then(() =>
+    typeof navigator !== 'undefined' && navigator.locks
+      ? navigator.locks.request('100day.auth-session', action)
+      : action(),
+  )
+  sessionQueue = result.catch(() => {})
+  return result
+}
+
+client.interceptors.request.use((config: AuthRequestConfig) => {
   const token = getAccessToken()
-  if (token) config.headers.Authorization = `Bearer ${token}`
+  if (token && !config.authRetry && !config.headers.has('X-Auth-Session')) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
   return config
 })
 
-async function refreshAccessToken(): Promise<string> {
+function expireAuth(): void {
+  setAccessToken('')
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('auth:expired'))
+}
+
+function tokenSubject(token: string): string | undefined {
+  const payload = token.split('.')[1]
+  if (!payload) return
+  try {
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))).sub
+  } catch {
+    return undefined
+  }
+}
+
+export function refreshAccessToken(expiredToken = ''): Promise<string> {
   if (refreshRequest) return refreshRequest
 
-  const refreshToken = getRefreshToken()
-  if (!refreshToken) throw new Error('登录状态已失效，请重新登录')
+  refreshRequest = withSessionLock(async () => {
+    const currentToken = getAccessToken()
+    if (expiredToken !== currentToken) {
+      if (currentToken && tokenSubject(currentToken) === tokenSubject(expiredToken)) return currentToken
+      throw new Error('登录状态已变更，请重试')
+    }
 
-  refreshRequest = client
-    .post<AuthTokens>('/auth/refresh', { refreshToken })
-    .then(({ data }) => {
-      saveTokens(data.accessToken, data.refreshToken)
-      return data.accessToken
-    })
-    .catch(error => {
-      clearTokens()
-      if (typeof window !== 'undefined') window.dispatchEvent(new Event('auth:expired'))
+    let data: AuthTokens
+    try {
+      ({ data } = await client.post<AuthTokens>('/auth/refresh', undefined, sessionRequestConfig))
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 401) expireAuth()
       throw error
-    })
-    .finally(() => {
-      refreshRequest = null
-    })
+    }
+    // Another tab may have signed in to a different account since this request was sent.
+    if (expiredToken && tokenSubject(data.accessToken) !== tokenSubject(expiredToken)) {
+      expireAuth()
+      throw new Error('登录账号已变更，请刷新页面')
+    }
+    setAccessToken(data.accessToken)
+    return data.accessToken
+  }).finally(() => {
+    refreshRequest = null
+  })
 
   return refreshRequest
 }
@@ -58,20 +98,28 @@ function getErrorMessage(error: unknown): string {
 client.interceptors.response.use(
   response => response,
   async (error: unknown) => {
+    if (axios.isAxiosError(error) && error.config?.headers.has('X-Auth-Session')) {
+      return Promise.reject(error)
+    }
+
     if (axios.isAxiosError(error) && error.response?.status === 401 && error.config) {
-      const config = error.config as InternalAxiosRequestConfig & { authRetry?: boolean }
-      const isAuthRoute = config.url?.includes('/auth/login')
-        || config.url?.includes('/auth/register')
-        || config.url?.includes('/auth/refresh')
-      if (!isAuthRoute && !config.authRetry && getRefreshToken()) {
+      const config = error.config as AuthRequestConfig
+      const authorization = config.headers.get('Authorization')
+      const sentToken = typeof authorization === 'string' ? authorization.slice('Bearer '.length) : ''
+      if (!config.authRetry && sentToken) {
         config.authRetry = true
         try {
-          const token = await refreshAccessToken()
+          const token = await refreshAccessToken(sentToken)
+          if (token !== getAccessToken() || tokenSubject(token) !== tokenSubject(sentToken)) {
+            throw new Error('登录状态已变更，请重试')
+          }
           config.headers.Authorization = `Bearer ${token}`
           return client.request(config)
         } catch (refreshError) {
           return Promise.reject(new Error(getErrorMessage(refreshError)))
         }
+      } else if (config.authRetry && sentToken === getAccessToken()) {
+        expireAuth()
       }
     }
 
@@ -100,5 +148,11 @@ function remove<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
 }
 
 const request = { get, post, put, patch, delete: remove }
+
+export function postSession<T>(url: string, data?: unknown): Promise<T> {
+  return post<T>(url, data, sessionRequestConfig).catch(error => {
+    throw new Error(getErrorMessage(error))
+  })
+}
 
 export default request

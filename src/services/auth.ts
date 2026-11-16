@@ -1,4 +1,4 @@
-import request from './request'
+import request, { postSession } from './request'
 
 export interface AuthUser {
   id: string
@@ -9,7 +9,6 @@ export interface AuthUser {
 
 export interface AuthTokens {
   accessToken: string
-  refreshToken: string
   expiresIn: number
 }
 
@@ -38,11 +37,11 @@ export async function encryptPassword(password: string): Promise<string> {
 }
 
 export function register(input: RegisterInput): Promise<AuthResponse> {
-  return request.post<AuthResponse>('/auth/register', input)
+  return postSession<AuthResponse>('/auth/register', input)
 }
 
 export function login(input: LoginInput): Promise<AuthResponse> {
-  return request.post<AuthResponse>('/auth/login', input)
+  return postSession<AuthResponse>('/auth/login', input)
 }
 
 export function getCurrentUser(): Promise<AuthUser> {
@@ -53,10 +52,6 @@ export function updateCurrentUser(username: string): Promise<AuthUser> {
   return request.patch<AuthUser>('/auth/me', { username })
 }
 
-export function refreshTokens(refreshToken: string): Promise<AuthTokens> {
-  return request.post<AuthTokens>('/auth/refresh', { refreshToken })
-}
-
-export function logout(refreshToken: string): Promise<void> {
-  return request.post<void>('/auth/logout', { refreshToken })
+export function logout(): Promise<void> {
+  return postSession<void>('/auth/logout')
 }

@@ -85,7 +85,7 @@ async function handleLogout() {
     await logoutAccount()
     toast('已退出登录')
   } catch (error) {
-    toast(error instanceof Error ? `${error.message}，本机登录状态已清除` : '本机登录状态已清除')
+    toast(error instanceof Error ? error.message : '退出登录失败，请重试')
   } finally {
     core.refreshAll()
   }

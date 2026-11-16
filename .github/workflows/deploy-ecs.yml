@@ -1,0 +1,74 @@
+name: Deploy frontend to ECS
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22.22.3'
+      - name: Install pnpm and dependencies
+        run: |
+          npm install --global pnpm@12.14.0
+          pnpm install --frozen-lockfile --ignore-scripts --config.strict-dep-builds=false
+      - name: Build frontend
+        env:
+          VITE_API_BASE_URL: /api
+        run: pnpm build
+      - name: Package release
+        run: |
+          printf '%s\n' "$GITHUB_SHA" > dist/.release-commit
+          tar -cf "$RUNNER_TEMP/daybyday.tar" -C dist .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: daybyday-frontend
+          path: ${{ runner.temp }}/daybyday.tar
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: daybyday-frontend-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: daybyday-frontend
+          path: ${{ runner.temp }}/daybyday-release
+      - name: Publish to daybyday.omhelp.com
+        env:
+          ECS_DEPLOY_KEY: ${{ secrets.DAYBYDAY_ECS_DEPLOY_KEY }}
+          ECS_HOST_KEY: 47.103.54.63 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO5z2ma6xnZOlJyyrixacL8WVRofO37IF1lW7yWIbM3K
+        run: |
+          if [[ -z "$ECS_DEPLOY_KEY" ]]; then
+            echo "::error::Missing GitHub Actions secret DAYBYDAY_ECS_DEPLOY_KEY"
+            exit 1
+          fi
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$ECS_DEPLOY_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$ECS_HOST_KEY" > "$ssh_dir/known_hosts"
+          ssh -T \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$ssh_dir/known_hosts" \
+            -o HostKeyAlgorithms=ssh-ed25519 -i "$ssh_dir/key" \
+            daybyday_ci@47.103.54.63 < "$RUNNER_TEMP/daybyday-release/daybyday.tar"

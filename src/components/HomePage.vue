@@ -58,6 +58,73 @@ const liveDays = computed(() => {
 const done = computed(() => viewDate.value ? recordsOf(viewDate.value) : [])
 const total = computed(() => data.habits.length)
 const isYesterday = computed(() => { todayDate.value; return viewDate.value === yesterdayKey() })
+const pendingDayHabits = computed(() => viewDate.value
+  ? data.habits.filter(habit => !done.value.includes(habit.id)) : [])
+const bubble = ref(null)
+let bubbleTimer
+const selectedPhoto = ref(null)
+const selectedPhotoUrl = ref('')
+const photoSaving = ref(false)
+
+function clearSelectedPhoto() {
+  if (selectedPhotoUrl.value) URL.revokeObjectURL(selectedPhotoUrl.value)
+  selectedPhotoUrl.value = ''
+  selectedPhoto.value = null
+}
+
+function showBubble(habit, rect) {
+  clearTimeout(bubbleTimer)
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  const particles = Array.from({ length: 48 }, (_, index) => {
+    const angle = index * 2 * Math.PI / 48
+    const dx = Math.sin(angle)
+    const dy = -Math.cos(angle)
+    const horizontal = dx > 0 ? (window.innerWidth - x) / dx : dx < 0 ? -x / dx : Infinity
+    const vertical = dy > 0 ? (window.innerHeight - y) / dy : dy < 0 ? -y / dy : Infinity
+    const edge = Math.min(horizontal, vertical)
+    return {
+      '--angle': `${index * 360 / 48}deg`,
+      '--distance': `${Math.max(110, edge * (.83 + index % 4 * .07))}px`,
+      '--delay': `${index % 5 * 20}ms`,
+      '--size': `${index % 6 === 0 ? 21 : 8 + index % 5 * 3}px`,
+    }
+  })
+  bubble.value = { id: Date.now(), name: habit.name, x, y, particles }
+  bubbleTimer = setTimeout(() => { bubble.value = null }, 1650)
+}
+
+async function onHabitCard(habit, event) {
+  const key = viewDate.value
+  if (!key || done.value.includes(habit.id)) return
+  const rect = event.currentTarget.getBoundingClientRect()
+  if (habit.needPhoto) {
+    clearSelectedPhoto()
+    openModal({ kind: 'habit-photo', key, habitId: habit.id, name: habit.name })
+    return
+  }
+  if (await toggleHabit(key, habit.id, false)) showBubble(habit, rect)
+}
+
+function pickCardPhoto() {
+  pendingPhoto = { key: modalKey.value, habitId: modal.value.habitId, preview: true }
+  const input = $('photoFile')
+  input.value = ''
+  input.click()
+}
+
+async function completePhotoCard() {
+  if (!selectedPhoto.value || photoSaving.value) return
+  photoSaving.value = true
+  const key = modalKey.value
+  const habitId = modal.value.habitId
+  const saved = await handleHabitPhoto(selectedPhoto.value, key, habitId)
+  photoSaving.value = false
+  if (saved) {
+    clearSelectedPhoto()
+    closeModal()
+  }
+}
 
 const checkEntry = computed(() => {
   const key = viewDate.value
@@ -252,8 +319,10 @@ async function handleHabitPhoto(file, key, habitId) {
     await saveCheckin(key, firstCheckin || completesDay);
 
     if (!firstCheckin && !completesDay) toast(`${habit.name} · 照片已保存，这项完成 ✨`);
+    return true
   } catch (error) {
     toast(error instanceof Error ? error.message : '照片保存失败，请重试');
+    return false
   }
 }
 
@@ -313,12 +382,12 @@ function recordNote(key, doneList, total) {
   }
 
   if (!doneList.length) return key === yesterdayKey()
-    ? '昨天还没有打卡 · 点上面按钮开始打卡'
-    : '这天还没有打卡 · 点上面按钮补记';
+    ? '昨天还没有打卡 · 点击下方卡片记录'
+    : '这天还没有打卡 · 点击下方卡片补记';
   return `已完成 ${doneList.length} / ${total}，还差 ${total - doneList.length} 个`;
 }
 
-async function toggleHabit(key, id) {
+async function toggleHabit(key, id, showCelebration = true) {
   const habit = data.habits.find(h => h.id === id);
   if (!habit) return;
 
@@ -343,9 +412,11 @@ async function toggleHabit(key, id) {
   core.refreshAll();
 
   try {
-    await saveCheckin(key, celebrate)
+    await saveCheckin(key, showCelebration && celebrate)
+    return true
   } catch (error) {
     toast(error instanceof Error ? error.message : '打卡记录保存失败')
+    return false
   }
 }
 
@@ -376,6 +447,12 @@ function handlePhotoFileChange(event) {
   if (!file || !pendingPhoto) return;
   const target = pendingPhoto;
   pendingPhoto = null;
+  if (target.preview) {
+    clearSelectedPhoto()
+    selectedPhoto.value = file
+    selectedPhotoUrl.value = URL.createObjectURL(file)
+    return
+  }
   handleHabitPhoto(file, target.key, target.habitId);
 }
 
@@ -392,8 +469,11 @@ function activatePage() {
 function deactivatePage() {
   homeActive = false
   clearCelebration()
+  clearSelectedPhoto()
+  clearTimeout(bubbleTimer)
+  bubble.value = null
   stopTicker()
-  if (['check', 'photo'].includes(modal.value?.kind)) closeModal()
+  if (['check', 'photo', 'habit-photo'].includes(modal.value?.kind)) closeModal()
   core.actions.photoFileChange = null
 }
 
@@ -424,7 +504,8 @@ onDeactivated(deactivatePage)
 watch(() => authUser.value?.id, () => {
   pendingPhoto = null
   clearCelebration()
-  if (['check', 'photo'].includes(modal.value?.kind)) closeModal()
+  clearSelectedPhoto()
+  if (['check', 'photo', 'habit-photo'].includes(modal.value?.kind)) closeModal()
 })
 </script>
 <template>
@@ -486,7 +567,7 @@ watch(() => authUser.value?.id, () => {
         </div>
       </div>
 
-      <button v-if="checkEntry" type="button" class="check-entry" id="checkEntry" :class="checkEntry.className" @click="requireReady(() => openCheckModal())">
+      <button v-if="checkEntry && !pendingDayHabits.length" type="button" class="check-entry" id="checkEntry" :class="checkEntry.className" @click="requireReady(() => openCheckModal())">
         <span class="check-entry-copy">
           <b>{{ checkEntry.title }}</b>
           <small>{{ fmtDate(viewDate) }} · {{ done.length }} / {{ total }} 已完成</small>
@@ -494,7 +575,7 @@ watch(() => authUser.value?.id, () => {
         <span class="check-entry-go">{{ checkEntry.pill }}</span>
       </button>
 
-      <div class="habit-list is-readonly" id="habitList">
+      <div v-if="!cycle || !total || pendingDayHabits.length" class="habit-list" id="habitList">
         <div v-if="!cycle" class="home-empty">
           <div class="empty-art">◷</div>
           <strong>先定一个目标周期</strong>
@@ -508,17 +589,17 @@ watch(() => authUser.value?.id, () => {
           <button type="button" id="emptyAdd" @click="requireReady(() => router.push('/profile'))">去添加打卡项　↗</button>
         </div>
         <template v-else>
-          <div
-            v-for="habit in data.habits"
+          <button
+            v-for="habit in pendingDayHabits"
             :key="habit.id"
+            type="button"
             class="habit"
-            :class="{ done: done.includes(habit.id), locked: !viewDate, 'has-photo': done.includes(habit.id) && photoOf(viewDate, habit.id) }"
-            @click="done.includes(habit.id) && photoOf(viewDate, habit.id) && requireReady(() => openPhotoView(viewDate, habit.id, 'home'))"
+            @click="requireReady(() => onHabitCard(habit, $event))"
           >
             <span v-if="habit.needPhoto" class="habit-flag">📷</span>
             <div class="habit-icon" :style="{ background: COLORS[habit.color % COLORS.length] }">{{ habit.icon }}</div>
             <div class="habit-copy"><div class="habit-title">{{ habit.name }}</div></div>
-          </div>
+          </button>
         </template>
       </div>
 
@@ -529,8 +610,17 @@ watch(() => authUser.value?.id, () => {
   </section>
 
   <CheckinCelebration :celebration="celebration" />
+  <Teleport to="body">
+    <div v-if="bubble" :key="bubble.id" class="check-bubble" :style="{ left: bubble.x + 'px', top: bubble.y + 'px' }" role="status">
+      <span class="check-bubble-screen" :style="{ left: -bubble.x + 'px', top: -bubble.y + 'px', '--burst-x': bubble.x + 'px', '--burst-y': bubble.y + 'px' }"></span>
+      <span class="check-bubble-core"><span class="check-bubble-shine"></span></span>
+      <span class="check-bubble-flash"></span>
+      <span v-for="(particle, index) in bubble.particles" :key="index" class="check-bubble-particle" :class="{ 'is-shard': index % 6 === 0 }" :style="particle"></span>
+      <strong class="check-bubble-success">✓ {{ bubble.name }} 打卡成功</strong>
+    </div>
+  </Teleport>
 
-  <Teleport v-if="['check', 'photo'].includes(modal?.kind)" to="#modal">
+  <Teleport v-if="['check', 'photo', 'habit-photo'].includes(modal?.kind)" to="#modal">
     <template v-if="modal.kind === 'check'">
       <div class="check-head">
         <h3>{{ modalKey === yesterdayKey() ? '昨天完成了哪些' : shortDate(modalKey) + ' 的完成情况' }}</h3>
@@ -562,6 +652,18 @@ watch(() => authUser.value?.id, () => {
       <button v-if="modalChecked" type="button" class="check-undo" id="checkUndo" :class="{ armed: undoArmed }" @click="handleCheckUndo">{{ undoArmed ? '再点一次确认撤销' : '撤销这天的打卡' }}</button>
     </template>
 
+    <template v-else-if="modal.kind === 'habit-photo'">
+      <h3>{{ modal.name }}</h3>
+      <p class="modal-desc">{{ fmtDate(modalKey) }} · 上传照片后完成打卡</p>
+      <button type="button" class="photo-pick-card" @click="pickCardPhoto">
+        <img v-if="selectedPhotoUrl" :src="selectedPhotoUrl" alt="待上传的打卡照片">
+        <span v-else>📷<br>拍照或选择图片</span>
+      </button>
+      <div class="modal-actions">
+        <button type="button" @click="clearSelectedPhoto(); closeModal()">取消</button>
+        <button type="button" class="save" :disabled="!selectedPhoto || photoSaving" @click="completePhotoCard">{{ photoSaving ? '上传中…' : '完成' }}</button>
+      </div>
+    </template>
     <template v-else>
       <h3>{{ modal.name }}</h3>
       <p class="modal-desc">{{ fmtDate(modalKey) }} · 打卡照片</p>

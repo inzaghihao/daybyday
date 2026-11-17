@@ -34,7 +34,7 @@ watch(() => route.name, (_name, previousName) => {
 }, { flush: 'post' })
 
 function navigateTo(path: string) {
-  router.push(path)
+  void router.replace(path)
 }
 
 function handleKeydown(event: KeyboardEvent) {

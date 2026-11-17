@@ -429,7 +429,7 @@ function stopTicker() {
 
 function requireReady(action) {
   if (!authUser.value) {
-    router.push({ path: '/auth', query: { redirect: '/home' } });
+    router.replace({ path: '/auth', query: { redirect: '/home' } });
     return;
   }
   if (!journalReady.value || !settingsReady.value) {
